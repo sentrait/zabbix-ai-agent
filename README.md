@@ -1,167 +1,132 @@
-# Agente de IA para Zabbix
+# Zabbix AI Agent
 
-Este agente de IA se conecta a tu servidor Zabbix para analizar datos históricos y predecir posibles problemas futuros utilizando aprendizaje automático.
+Un agente inteligente para Zabbix que utiliza Machine Learning para predecir y detectar anomalías en métricas del sistema.
 
-## Características
+## 🚀 Características
 
-- Conexión automática a la API de Zabbix
-- Análisis de datos históricos
-- Predicción de problemas utilizando Random Forest
-- Monitoreo en tiempo real
-- Sistema de alertas automáticas
-- Logging detallado de operaciones
+- Predicción de métricas usando Random Forest
+- Detección de anomalías en tiempo real
+- Integración nativa con Zabbix
+- Soporte específico para Ubuntu 24.04
 - Configuración flexible mediante variables de entorno
-- Instalación automatizada para Ubuntu 24.04
+- Logging detallado y rotación de logs
+- Retención configurable de datos históricos
 
-## Requisitos
+## 📋 Requisitos Previos
 
 - Python 3.8 o superior
-- Acceso a un servidor Zabbix con API habilitada
-- Credenciales de Zabbix con permisos de lectura
+- Zabbix Server 6.0 o superior
+- Acceso a la API de Zabbix
+- Permisos de administrador en Zabbix
 
-## Instalación
+## 🔧 Instalación
 
 ### En Ubuntu 24.04
 
-1. Descarga el paquete del agente:
 ```bash
+# Clonar el repositorio
 git clone https://github.com/sentrait/zabbix-ai-agent.git
 cd zabbix-ai-agent
+
+# Ejecutar script de instalación
+chmod +x install_ubuntu.sh
+./install_ubuntu.sh
 ```
 
-2. Ejecuta el script de instalación como root:
-```bash
-sudo bash install_ubuntu.sh
-```
+### Instalación Manual
 
-El script realizará automáticamente:
-- Instalación de dependencias necesarias
-- Creación de directorios y archivos de configuración
-- Configuración del servicio systemd
-- Inicio automático del agente
-
-### Instalación Manual (Windows u otros sistemas)
-
-1. Clona o descarga este repositorio
-2. Instala las dependencias:
+1. Instalar dependencias:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Configura las variables de entorno:
-   - Crea un archivo `.env` en el directorio raíz
-   - Añade las siguientes variables:
-
-```ini
-# URL del servidor Zabbix (debe terminar en api_jsonrpc.php)
-ZABBIX_URL=https://your-zabbix-server/api_jsonrpc.php
-
-# Credenciales de acceso
-ZABBIX_USER=your_username
-ZABBIX_PASSWORD=your_password
-
-# Configuración del modelo de IA
-# Umbral de alerta (valor entre 0 y 100)
-ALERT_THRESHOLD=90
-
-# Intervalo de monitoreo en minutos
-MONITORING_INTERVAL=15
-
-# Período de datos históricos para entrenamiento (en días)
-TRAINING_PERIOD=30
-
-# Período de predicción (en horas)
-PREDICTION_PERIOD=24
-
-# Configuración de logging
-LOG_LEVEL=INFO
-LOG_FILE=zabbix_ai_agent.log
-```
-
-### Descripción de las Variables de Entorno
-
-- `ZABBIX_URL`: URL completa de la API de Zabbix
-- `ZABBIX_USER`: Nombre de usuario con acceso a la API
-- `ZABBIX_PASSWORD`: Contraseña del usuario
-
-#### Configuración del Modelo
-- `ALERT_THRESHOLD`: Valor numérico (0-100) que determina cuándo se genera una alerta
-- `MONITORING_INTERVAL`: Frecuencia de monitoreo en minutos
-- `TRAINING_PERIOD`: Cantidad de días de datos históricos para entrenar el modelo
-- `PREDICTION_PERIOD`: Ventana de tiempo en horas para las predicciones
-
-#### Configuración de Logs
-- `LOG_LEVEL`: Nivel de detalle de los logs (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-- `LOG_FILE`: Nombre del archivo donde se guardarán los logs
-
-## Gestión del Servicio en Ubuntu
-
-### Comandos Útiles
-
+2. Configurar variables de entorno:
 ```bash
-# Ver el estado del servicio
-sudo systemctl status zabbix-ai-agent
-
-# Iniciar el servicio
-sudo systemctl start zabbix-ai-agent
-
-# Detener el servicio
-sudo systemctl stop zabbix-ai-agent
-
-# Reiniciar el servicio
-sudo systemctl restart zabbix-ai-agent
-
-# Ver los logs en tiempo real
-sudo tail -f /var/log/zabbix-ai-agent/zabbix_ai_agent.log
+cp .env.example .env
+# Editar .env con tus credenciales
 ```
 
-### Ubicación de Archivos en Ubuntu
+## ⚙️ Configuración
 
-- Ejecutable: `/opt/zabbix-ai-agent/venv/bin/zabbix-ai-agent`
-- Configuración: `/etc/zabbix-ai-agent/.env`
-- Logs: `/var/log/zabbix-ai-agent/zabbix_ai_agent.log`
-- Servicio: `/etc/systemd/system/zabbix-ai-agent.service`
+### Variables de Entorno
 
-## Uso
+| Variable | Descripción | Valor por Defecto |
+|----------|-------------|-------------------|
+| ZABBIX_API_URL | URL de la API de Zabbix | - |
+| ZABBIX_USER | Usuario de Zabbix | - |
+| ZABBIX_PASSWORD | Contraseña de Zabbix | - |
+| LOG_LEVEL | Nivel de logging | INFO |
+| MODEL_UPDATE_INTERVAL | Intervalo de actualización del modelo (segundos) | 3600 |
+| PREDICTION_INTERVAL | Intervalo de predicción (segundos) | 300 |
+| DATA_RETENTION_DAYS | Días de retención de datos | 30 |
 
-Para iniciar el agente:
+## 🔍 Monitoreo
 
-```bash
-python zabbix_ai_agent.py
+El agente monitorea las siguientes métricas:
+
+- Uso de CPU
+- Uso de Memoria
+- Uso de Disco
+- Tráfico de Red
+- Tiempo de Respuesta de Servicios
+
+### Predicciones
+
+El modelo Random Forest se entrena con datos históricos para predecir:
+
+- Tendencias de uso de recursos
+- Posibles cuellos de botella
+- Anomalías en el comportamiento del sistema
+
+## 📊 Dashboard
+
+El agente incluye templates para Zabbix que proporcionan:
+
+- Visualización de predicciones
+- Gráficos de tendencias
+- Alertas inteligentes
+- Comparación con datos históricos
+
+## 🛠️ Desarrollo
+
+### Estructura del Proyecto
+
+```
+zabbix-ai-agent/
+├── zabbix_ai_agent.py     # Código principal
+├── setup.py               # Configuración de instalación
+├── requirements.txt       # Dependencias
+├── install_ubuntu.sh      # Script de instalación
+├── .env.example          # Plantilla de configuración
+├── LICENSE               # Licencia MIT
+└── README.md             # Este archivo
 ```
 
-El agente:
-- Se conectará automáticamente a tu servidor Zabbix
-- Recopilará datos históricos según el período configurado
-- Entrenará modelos de IA para cada item monitoreado
-- Realizará predicciones según el intervalo configurado
-- Generará alertas cuando los valores predichos superen el umbral establecido
+### Contribuir
 
-## Logs
+1. Fork el repositorio
+2. Crea una rama para tu feature (`git checkout -b feature/AmazingFeature`)
+3. Commit tus cambios (`git commit -m 'Add some AmazingFeature'`)
+4. Push a la rama (`git push origin feature/AmazingFeature`)
+5. Abre un Pull Request
 
-Los logs se guardan en el archivo especificado en `LOG_FILE` y contienen información detallada sobre:
-- Conexiones a Zabbix
-- Entrenamiento de modelos
-- Predicciones
-- Alertas
-- Errores
+## 📝 Licencia
 
-## Personalización
+Este proyecto está bajo la Licencia MIT - ver el archivo [LICENSE](LICENSE) para más detalles.
 
-Puedes ajustar el comportamiento del agente modificando las variables en el archivo `.env`:
+## 🤝 Soporte
 
-1. **Ajuste de Sensibilidad**
-   - Reduce `ALERT_THRESHOLD` para recibir más alertas
-   - Aumenta `ALERT_THRESHOLD` para recibir solo alertas críticas
+Para soporte, por favor:
 
-2. **Frecuencia de Monitoreo**
-   - Reduce `MONITORING_INTERVAL` para actualizaciones más frecuentes
-   - Aumenta `MONITORING_INTERVAL` para reducir la carga del servidor
+1. Revisa la [documentación](https://github.com/sentrait/zabbix-ai-agent/wiki)
+2. Abre un [issue](https://github.com/sentrait/zabbix-ai-agent/issues)
+3. Contacta a [soporte@sentrait.com.uy](mailto:soporte@sentrait.com.uy)
 
-3. **Precisión del Modelo**
-   - Aumenta `TRAINING_PERIOD` para un modelo más preciso (requiere más datos)
-   - Ajusta `PREDICTION_PERIOD` según tus necesidades de predicción
+## 🔜 Próximas Funcionalidades
 
-4. **Nivel de Logging**
-   - Usa `LOG_LEVEL=DEBUG` para diagnóstico detallado
-   - Usa `LOG_LEVEL=WARNING` para ver solo problemas importantes 
+- [ ] Soporte para más algoritmos de ML
+- [ ] API REST para consultas externas
+- [ ] Integración con sistemas de notificación
+- [ ] Dashboard personalizable
+- [ ] Soporte para clustering
+- [ ] Exportación de modelos entrenados 
