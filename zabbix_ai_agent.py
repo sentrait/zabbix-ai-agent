@@ -1,5 +1,6 @@
 import os
 import logging
+from logging.handlers import RotatingFileHandler
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
@@ -9,44 +10,63 @@ from sklearn.preprocessing import MinMaxScaler
 from sklearn.ensemble import RandomForestRegressor
 import schedule
 import time
+import joblib
 
 # Cargar variables de entorno
 load_dotenv()
 
 # Configurar logging con nivel desde .env
+log_file_path = os.getenv('LOG_FILE', 'zabbix_ai_agent.log')
+log_max_bytes = int(os.getenv('LOG_MAX_BYTES', 10*1024*1024)) # Default 10MB
+log_backup_count = int(os.getenv('LOG_BACKUP_COUNT', 5))
+
+rotating_handler = RotatingFileHandler(
+    log_file_path,
+    maxBytes=log_max_bytes,
+    backupCount=log_backup_count
+)
+
 logging.basicConfig(
     level=getattr(logging, os.getenv('LOG_LEVEL', 'INFO')),
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(os.getenv('LOG_FILE', 'zabbix_ai_agent.log')),
+        rotating_handler,
         logging.StreamHandler()
     ]
 )
 
 # Configuración de Zabbix
-ZABBIX_URL = "https://zabbix.sentrait.com.uy/api_jsonrpc.php"
-ZABBIX_USER = "Admin"
-ZABBIX_PASSWORD = "ko0XxG1h$Y2W42"
 
 class ZabbixAIAgent:
     def __init__(self):
+        self.zabbix_url = os.getenv('ZABBIX_API_URL')
+        self.zabbix_user = os.getenv('ZABBIX_USER')
+        self.zabbix_password = os.getenv('ZABBIX_PASSWORD')
+
+        if not all([self.zabbix_url, self.zabbix_user, self.zabbix_password]):
+            raise ValueError("Missing one or more Zabbix configuration environment variables (ZABBIX_API_URL, ZABBIX_USER, ZABBIX_PASSWORD)")
+
         self.zapi = None
-        self.scaler = MinMaxScaler()
-        self.model = None
+        self.models = {}
+        self.scalers = {}
+        self.model_dir = os.getenv('MODEL_DIR', 'trained_models')
+        os.makedirs(self.model_dir, exist_ok=True)
+        self.last_trained_times = {}
         # Cargar configuración desde .env
         self.alert_threshold = float(os.getenv('ALERT_THRESHOLD', 90))
-        self.training_period = int(os.getenv('TRAINING_PERIOD', 30))
-        self.prediction_period = int(os.getenv('PREDICTION_PERIOD', 24))
+        self.training_period = int(os.getenv('TRAINING_PERIOD', 30)) # Days of data for training
+        self.model_sequence_length = int(os.getenv('MODEL_SEQUENCE_LENGTH', '24')) # Number of data points in a sequence for the model
+        self.prediction_data_lookback_hours = int(os.getenv('PREDICTION_DATA_LOOKBACK_HOURS', '24')) # Hours of recent data to use for making a prediction
         self.monitoring_interval = int(os.getenv('MONITORING_INTERVAL', 15))
+        self.model_update_interval = int(os.getenv('MODEL_UPDATE_INTERVAL', '3600'))
         self.connect_to_zabbix()
-        self.initialize_model()
 
     def connect_to_zabbix(self):
         """Conectar a la API de Zabbix"""
         try:
-            logging.info(f"Intentando conectar a Zabbix en: {os.getenv('ZABBIX_URL')}")
-            self.zapi = ZabbixAPI(os.getenv('ZABBIX_URL'))
-            self.zapi.login(os.getenv('ZABBIX_USER'), os.getenv('ZABBIX_PASSWORD'))
+            logging.info(f"Intentando conectar a Zabbix en: {self.zabbix_url}")
+            self.zapi = ZabbixAPI(self.zabbix_url)
+            self.zapi.login(self.zabbix_user, self.zabbix_password)
             logging.info(f"Conectado exitosamente a Zabbix API Version {self.zapi.api_version()}")
         except Exception as e:
             logging.error(f"Error al conectar con Zabbix: {e}")
@@ -63,8 +83,8 @@ class ZabbixAIAgent:
             )
             
             if not items:
-                logging.error(f"No se encontró el item con key {item_key}")
-                return None
+                logging.warning(f"No item found with key {item_key} for host_id {host_id}")
+                return pd.DataFrame()
 
             history = self.zapi.history.get(
                 itemids=items[0]['itemid'],
@@ -74,92 +94,145 @@ class ZabbixAIAgent:
                 sortorder='ASC'
             )
 
-            if history:
-                logging.info(f"Se obtuvieron {len(history)} registros históricos")
-            else:
-                logging.warning(f"No se encontraron datos históricos para el item")
+            if not history:
+                logging.warning(f"No historical data found for item_id {items[0]['itemid']}")
+                return pd.DataFrame()
 
+            logging.info(f"Se obtuvieron {len(history)} registros históricos")
             return pd.DataFrame(history)
         except Exception as e:
             logging.error(f"Error al obtener datos históricos: {e}")
-            return None
+            return pd.DataFrame()
 
-    def initialize_model(self):
-        """Inicializar el modelo de IA"""
+    def _get_model_path(self, item_id_key):
+        """Devuelve la ruta del archivo para el modelo de un item."""
+        return os.path.join(self.model_dir, f"{item_id_key}_model.joblib")
+
+    def _get_scaler_path(self, item_id_key):
+        """Devuelve la ruta del archivo para el scaler de un item."""
+        return os.path.join(self.model_dir, f"{item_id_key}_scaler.joblib")
+
+    def _load_model_and_scaler(self, item_id_key):
+        """Carga el modelo y el scaler para un item_id_key dado."""
+        model_path = self._get_model_path(item_id_key)
+        scaler_path = self._get_scaler_path(item_id_key)
+
+        if os.path.exists(model_path) and os.path.exists(scaler_path):
+            try:
+                self.models[item_id_key] = joblib.load(model_path)
+                self.scalers[item_id_key] = joblib.load(scaler_path)
+                logging.info(f"Modelo y scaler cargados para {item_id_key} desde {self.model_dir}")
+                return True
+            except Exception as e:
+                logging.error(f"Error al cargar modelo/scaler para {item_id_key}: {e}")
+                return False
+        else:
+            logging.info(f"Modelo y/o scaler no encontrados para {item_id_key} en {self.model_dir}. Se creará uno nuevo si es necesario.")
+            return False
+
+    def _save_model_and_scaler(self, item_id_key):
+        """Guarda el modelo y el scaler para un item_id_key dado."""
+        model_path = self._get_model_path(item_id_key)
+        scaler_path = self._get_scaler_path(item_id_key)
+
         try:
-            self.model = RandomForestRegressor(n_estimators=100, random_state=42)
-            logging.info("Modelo de IA inicializado correctamente")
+            joblib.dump(self.models[item_id_key], model_path)
+            joblib.dump(self.scalers[item_id_key], scaler_path)
+            logging.info(f"Modelo y scaler guardados para {item_id_key} en {self.model_dir}")
         except Exception as e:
-            logging.error(f"Error al inicializar el modelo: {e}")
-            raise
+            logging.error(f"Error al guardar modelo/scaler para {item_id_key}: {e}")
 
     def train_model(self, host_id, item_key):
         """Entrenar el modelo con datos históricos"""
+        item_id_key = f"{host_id}_{item_key}"
         time_from = int((datetime.now() - timedelta(days=self.training_period)).timestamp())
-        logging.info(f"Iniciando entrenamiento para host_id: {host_id}, item_key: {item_key}")
+        logging.info(f"Iniciando entrenamiento para {item_id_key}")
+
+        if not self._load_model_and_scaler(item_id_key):
+            logging.info(f"Creando nuevo modelo y scaler para {item_id_key}")
+            current_model = RandomForestRegressor(n_estimators=100, random_state=42)
+            current_scaler = MinMaxScaler()
+            self.models[item_id_key] = current_model
+            self.scalers[item_id_key] = current_scaler
+        else:
+            logging.info(f"Usando modelo y scaler existentes para {item_id_key}")
+            current_model = self.models[item_id_key]
+            current_scaler = self.scalers[item_id_key]
         
         data = self.get_historical_data(host_id, item_key, time_from)
         
-        if data is None or data.empty:
-            logging.warning(f"No hay suficientes datos para entrenar el modelo")
+        if data is None or data.empty: # data.empty will be true if get_historical_data returns pd.DataFrame()
+            logging.warning(f"No historical data available for training {item_id_key}. Skipping training.")
             return False
 
         try:
             # Preparar datos para el entrenamiento
             values = data['value'].astype(float).values.reshape(-1, 1)
-            scaled_values = self.scaler.fit_transform(values)
+            scaled_values = current_scaler.fit_transform(values)
             
             # Crear secuencias para el entrenamiento
             X, y = [], []
-            for i in range(len(scaled_values) - self.prediction_period):
-                X.append(scaled_values[i:i+self.prediction_period].flatten())
-                y.append(scaled_values[i+self.prediction_period][0])
+            for i in range(len(scaled_values) - self.model_sequence_length):
+                X.append(scaled_values[i:i+self.model_sequence_length].flatten())
+                y.append(scaled_values[i+self.model_sequence_length][0])
             
-            if not X:
-                logging.warning("No hay suficientes secuencias para entrenar el modelo")
+            if not X or not y: # Asegurarse que y no esté vacío también
+                logging.warning(f"No hay suficientes secuencias ({len(X)}) para entrenar el modelo para {item_id_key}")
                 return False
 
             X = np.array(X)
             y = np.array(y)
 
             # Entrenar el modelo
-            self.model.fit(X, y)
-            logging.info(f"Modelo entrenado exitosamente con {len(X)} secuencias")
+            current_model.fit(X, y)
+            logging.info(f"Modelo para {item_id_key} entrenado exitosamente con {len(X)} secuencias")
+            self._save_model_and_scaler(item_id_key)
             return True
         except Exception as e:
-            logging.error(f"Error durante el entrenamiento: {e}")
+            logging.error(f"Error durante el entrenamiento para {item_id_key}: {e}")
             return False
 
     def predict_problems(self, host_id, item_key):
         """Predecir problemas futuros"""
-        time_from = int((datetime.now() - timedelta(hours=self.prediction_period)).timestamp())
-        logging.info(f"Realizando predicción para host_id: {host_id}, item_key: {item_key}")
-        
+        item_id_key = f"{host_id}_{item_key}"
+        logging.info(f"Realizando predicción para {item_id_key} (data lookback: {self.prediction_data_lookback_hours}h)")
+
+        if not self._load_model_and_scaler(item_id_key) or item_id_key not in self.models:
+            logging.warning(f"Modelo para {item_id_key} no encontrado o no cargado. Skipping predicción.")
+            return None
+
+        current_model = self.models[item_id_key]
+        current_scaler = self.scalers[item_id_key]
+
+        time_from = int((datetime.now() - timedelta(hours=self.prediction_data_lookback_hours)).timestamp())
         data = self.get_historical_data(host_id, item_key, time_from)
         
-        if data is None or data.empty:
-            logging.warning("No hay datos suficientes para realizar predicción")
+        if data is None or data.empty: # data.empty will be true if get_historical_data returns pd.DataFrame()
+            logging.warning(f"No historical data available for prediction for {item_id_key}. Skipping prediction.")
             return None
 
         try:
             values = data['value'].astype(float).values.reshape(-1, 1)
-            scaled_values = self.scaler.transform(values)
+            # Asegurarse de que el scaler esté ajustado (fit) antes de transformar.
+            # Esto debería haber ocurrido en train_model. Si no, es un problema de flujo.
+            # Por seguridad, podríamos verificar current_scaler.n_samples_seen_ > 0 pero puede ser ruidoso.
+            scaled_values = current_scaler.transform(values)
             
             # Preparar datos para la predicción
-            if len(scaled_values) < self.prediction_period:
-                logging.warning("No hay suficientes datos para realizar predicción")
+            if len(scaled_values) < self.model_sequence_length:
+                logging.warning(f"No hay suficientes datos (got {len(scaled_values)}, need {self.model_sequence_length}) para realizar predicción con la secuencia completa para {item_id_key}.")
                 return None
                 
-            X = scaled_values[-self.prediction_period:].flatten().reshape(1, -1)
+            X_pred = scaled_values[-self.model_sequence_length:].flatten().reshape(1, -1)
             
             # Realizar predicción
-            prediction = self.model.predict(X)
-            prediction = self.scaler.inverse_transform(prediction.reshape(-1, 1))
+            prediction = current_model.predict(X_pred)
+            prediction_inversed = current_scaler.inverse_transform(prediction.reshape(-1, 1))
             
-            logging.info(f"Predicción realizada: {prediction[0][0]}")
-            return prediction[0][0]
+            logging.info(f"Predicción para {item_id_key} realizada: {prediction_inversed[0][0]}")
+            return prediction_inversed[0][0]
         except Exception as e:
-            logging.error(f"Error durante la predicción: {e}")
+            logging.error(f"Error durante la predicción para {item_id_key}: {e}")
             return None
 
     def monitor_and_predict(self):
@@ -179,16 +252,25 @@ class ZabbixAIAgent:
                 
                 for item in items:
                     logging.info(f"Procesando item: {item['name']}")
-                    # Entrenar el modelo para cada item
-                    if self.train_model(host['hostid'], item['key_']):
-                        # Realizar predicción
-                        prediction = self.predict_problems(host['hostid'], item['key_'])
-                        if prediction is not None:
-                            logging.info(f"Predicción para {host['host']} - {item['name']}: {prediction}")
-                            
-                            # Analizar si el valor predicho indica un problema potencial
-                            if prediction > self.alert_threshold:
-                                logging.warning(f"¡ALERTA! Posible problema futuro detectado en {host['host']} - {item['name']}")
+                    item_id_key = f"{host['hostid']}_{item['key_']}"
+                    current_timestamp = time.time()
+                    last_trained = self.last_trained_times.get(item_id_key, 0)
+
+                    if (current_timestamp - last_trained) > self.model_update_interval:
+                        logging.info(f"Intervalo de entrenamiento caducado para {item_id_key}. Entrenando modelo.")
+                        if self.train_model(host['hostid'], item['key_']):
+                            self.last_trained_times[item_id_key] = current_timestamp
+                    else:
+                        logging.info(f"Modelo para {item_id_key} está actualizado. Saltando entrenamiento.")
+
+                    # Realizar predicción independientemente del ciclo de entrenamiento
+                    prediction = self.predict_problems(host['hostid'], item['key_'])
+                    if prediction is not None:
+                        logging.info(f"Predicción para {host['host']} - {item['name']}: {prediction}")
+
+                        # Analizar si el valor predicho indica un problema potencial
+                        if prediction > self.alert_threshold:
+                            logging.warning(f"¡ALERTA! Posible problema futuro detectado en {host['host']} - {item['name']}")
                                 
         except Exception as e:
             logging.error(f"Error en el monitoreo: {e}")
